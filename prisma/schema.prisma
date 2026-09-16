@@ -1,0 +1,589 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Parkmind — data model
+//
+// Design notes:
+//  • Money is stored as integer cents to avoid floating-point drift.
+//  • The *authoritative* city parking rules live in code (src/cities/*). The
+//    `City`/`ParkingZone` rows exist for referential integrity, admin toggles
+//    and listings — they mirror the code config, they are not the source of truth.
+//  • We never store raw bank/credential data. A `ProviderConnection` only keeps
+//    an opaque `externalAccountRef` (a token id to a future vault / operator OAuth)
+//    and a display-only `paymentMethodLabel`.
+//  • Every automated decision is journaled in `AuditLog` for explainability.
+// ─────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+enum PlanTier {
+  FREE
+  PARKMIND
+  PRO
+  FLEET
+}
+
+enum SubscriptionStatus {
+  NONE
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+enum VehicleStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum RightType {
+  RESIDENT
+  PROFESSIONAL
+  OTHER
+}
+
+enum RightStatus {
+  ACTIVE
+  EXPIRING_SOON
+  EXPIRED
+  PENDING_VERIFICATION
+  REVOKED
+}
+
+enum ZoneKind {
+  RESIDENTIAL
+  MIXED
+  ROTATING
+  PAID
+  FREE
+}
+
+enum ProviderKey {
+  PAYBYPHONE
+  EASYPARK
+  INDIGO_NEO
+  FLOWBIRD
+  MOCK
+}
+
+enum ProviderHealth {
+  OPERATIONAL
+  DEGRADED
+  DOWN
+  NOT_IMPLEMENTED
+}
+
+enum ProviderConnectionStatus {
+  PENDING
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+enum AutomationStatus {
+  ACTIVE
+  PAUSED
+  DISABLED
+}
+
+enum DecisionType {
+  NO_ACTION
+  START_SESSION
+  EXTEND_SESSION
+  STOP_SESSION
+  REQUIRE_USER_CONFIRMATION
+  ERROR
+}
+
+enum SessionOrigin {
+  AUTOMATION
+  MANUAL
+  SIMULATION
+}
+
+enum SessionStatus {
+  PENDING
+  ACTIVE
+  COMPLETED
+  FAILED
+  CANCELED
+  SIMULATED
+  REQUIRES_CONFIRMATION
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  SIMULATED
+}
+
+enum NotificationType {
+  WELCOME
+  SESSION_STARTED
+  SESSION_EXTENDED
+  SESSION_STOPPED
+  PAYMENT_FAILED
+  RIGHT_EXPIRING
+  RIGHT_EXPIRED
+  ZONE_NOT_RECOGNIZED
+  NO_ACTION_NEEDED
+  CONFIRMATION_REQUIRED
+  AUTOMATION_SUSPENDED
+  CAP_REACHED
+  SYSTEM
+}
+
+enum NotificationChannel {
+  WEB
+  EMAIL
+  SMS
+  PUSH
+}
+
+enum AuditCategory {
+  ENGINE_DECISION
+  SESSION
+  PAYMENT
+  AUTH
+  ADMIN
+  PROVIDER
+  CONSENT
+  SECURITY
+  SYSTEM
+}
+
+enum TokenType {
+  MAGIC_LINK
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
+enum ConsentKind {
+  AUTOMATION
+  TERMS
+  PRIVACY
+  DATA_PROCESSING
+}
+
+// ── Core identity ────────────────────────────────────────────────────────────
+
+model User {
+  id                 String             @id @default(cuid())
+  email              String             @unique
+  emailVerifiedAt    DateTime?
+  passwordHash       String?
+  name               String?
+  role               UserRole           @default(USER)
+  planTier           PlanTier           @default(FREE)
+  subscriptionStatus SubscriptionStatus @default(NONE)
+  stripeCustomerId   String?            @unique
+  stripeSubscriptionId String?          @unique
+  currentPeriodEnd   DateTime?
+  isSuspended        Boolean            @default(false)
+  locale             String             @default("fr")
+  timezone           String             @default("Europe/Paris")
+  onboardedAt        DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+
+  preferences         UserPreferences?
+  vehicles            Vehicle[]
+  rights              ParkingRight[]
+  automations         AutomationRule[]
+  sessions            ParkingSession[]
+  payments            Payment[]
+  notifications       Notification[]
+  providerConnections ProviderConnection[]
+  auditLogs           AuditLog[]         @relation("AuditSubject")
+  tokens              AuthToken[]
+  consents            ConsentLog[]
+
+  @@index([role])
+  @@map("users")
+}
+
+model UserPreferences {
+  id                         String   @id @default(cuid())
+  userId                     String   @unique
+  user                       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Master automation switch owned by the user.
+  automationEnabled          Boolean  @default(true)
+  // Simulation Mode: decisions are made but no money is ever spent.
+  simulationMode             Boolean  @default(true)
+  // Financial safety ceilings (integer cents).
+  dailyCapCents              Int      @default(1000)
+  monthlyCapCents            Int      @default(10000)
+  // Above this amount, the engine requires explicit user confirmation.
+  confirmationThresholdCents Int      @default(500)
+  notifyByEmail              Boolean  @default(true)
+  notifyInApp                Boolean  @default(true)
+  quietHoursStart            String?
+  quietHoursEnd              String?
+  // Timestamp of explicit, logged consent to run automations.
+  consentAutomationAt        DateTime?
+  createdAt                  DateTime @default(now())
+  updatedAt                  DateTime @updatedAt
+
+  @@map("user_preferences")
+}
+
+model AuthToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      TokenType
+  // Only the hash of the one-time token is stored.
+  tokenHash String    @unique
+  expiresAt DateTime
+  consumedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, type])
+  @@map("auth_tokens")
+}
+
+model ConsentLog {
+  id        String      @id @default(cuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      ConsentKind
+  granted   Boolean
+  version   String
+  ip        String?
+  userAgent String?
+  createdAt DateTime    @default(now())
+
+  @@index([userId, kind])
+  @@map("consent_logs")
+}
+
+// ── Geography & municipal rules (mirror of code config) ──────────────────────
+
+model City {
+  id           String   @id @default(cuid())
+  slug         String   @unique
+  name         String
+  country      String   @default("FR")
+  timezone     String   @default("Europe/Paris")
+  currency     String   @default("EUR")
+  isEnabled    Boolean  @default(true)
+  // Which code config version these rows were seeded from.
+  rulesVersion String   @default("1")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  zones       ParkingZone[]
+  vehicles    Vehicle[]
+  rights      ParkingRight[]
+  automations AutomationRule[]
+  sessions    ParkingSession[]
+
+  @@map("cities")
+}
+
+model ParkingZone {
+  id        String   @id @default(cuid())
+  cityId    String
+  city      City     @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  code      String
+  name      String
+  kind      ZoneKind @default(MIXED)
+  isPaid    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  vehicles    Vehicle[]
+  rights      ParkingRight[]
+  automations AutomationRule[]
+  sessions    ParkingSession[]
+
+  @@unique([cityId, code])
+  @@map("parking_zones")
+}
+
+// ── Operators ────────────────────────────────────────────────────────────────
+
+model ParkingProvider {
+  id            String         @id @default(cuid())
+  key           ProviderKey    @unique
+  name          String
+  isEnabled     Boolean        @default(true)
+  // Whether a *real* adapter exists. Only MOCK is implemented in the MVP.
+  isImplemented Boolean        @default(false)
+  health        ProviderHealth @default(NOT_IMPLEMENTED)
+  website       String?
+  notes         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  connections ProviderConnection[]
+  sessions    ParkingSession[]
+  payments    Payment[]
+
+  @@map("parking_providers")
+}
+
+model ProviderConnection {
+  id                 String                   @id @default(cuid())
+  userId             String
+  user               User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  providerId         String
+  provider           ParkingProvider          @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  label              String?
+  status             ProviderConnectionStatus @default(PENDING)
+  // Opaque reference to an external account/token vault. NEVER raw credentials.
+  externalAccountRef String?
+  // Display-only, e.g. "Visa •• 4242". No PAN is ever stored.
+  paymentMethodLabel String?
+  lastCheckedAt      DateTime?
+  meta               Json?
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
+
+  vehicles    Vehicle[]
+  automations AutomationRule[]
+  sessions    ParkingSession[]
+
+  @@index([userId])
+  @@map("provider_connections")
+}
+
+// ── Vehicles & rights ────────────────────────────────────────────────────────
+
+model Vehicle {
+  id                   String        @id @default(cuid())
+  userId               String
+  user                 User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Normalized plate (uppercase, no separators) — used for matching/uniqueness.
+  plate                String
+  // As entered by the user, e.g. "AB-123-CD".
+  displayPlate         String
+  model                String?
+  cityId               String
+  city                 City          @relation(fields: [cityId], references: [id])
+  defaultZoneId        String?
+  defaultZone          ParkingZone?  @relation(fields: [defaultZoneId], references: [id])
+  providerConnectionId String?
+  providerConnection   ProviderConnection? @relation(fields: [providerConnectionId], references: [id])
+  status               VehicleStatus @default(ACTIVE)
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  rights      ParkingRight[]
+  automations AutomationRule[]
+  sessions    ParkingSession[]
+
+  @@unique([userId, plate])
+  @@index([cityId])
+  @@map("vehicles")
+}
+
+model ParkingRight {
+  id          String      @id @default(cuid())
+  userId      String
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicleId   String?
+  vehicle     Vehicle?    @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  cityId      String
+  city        City        @relation(fields: [cityId], references: [id])
+  zoneId      String?
+  zone        ParkingZone? @relation(fields: [zoneId], references: [id])
+  type        RightType
+  status      RightStatus @default(ACTIVE)
+  reference   String?
+  startsOn    DateTime?
+  expiresOn   DateTime?
+  // Flexible restrictions, e.g. { maxHoursPerDay: 24, allowedDays: [1,2,3,4,5] }.
+  restrictions Json?
+  // Reference to an uploaded justificatif. Files themselves are not stored here.
+  documentRef String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([userId])
+  @@index([expiresOn])
+  @@map("parking_rights")
+}
+
+// ── Automation rules ─────────────────────────────────────────────────────────
+
+model AutomationRule {
+  id                   String             @id @default(cuid())
+  userId               String
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicleId            String
+  vehicle              Vehicle            @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  cityId               String
+  city                 City               @relation(fields: [cityId], references: [id])
+  zoneId               String
+  zone                 ParkingZone        @relation(fields: [zoneId], references: [id])
+  providerConnectionId String?
+  providerConnection   ProviderConnection? @relation(fields: [providerConnectionId], references: [id])
+  name                 String?
+  status               AutomationStatus   @default(ACTIVE)
+  // Rule-level simulation flag; effective simulation also honors the user pref
+  // and the global default.
+  simulationMode       Boolean            @default(true)
+  // ISO days of week (1 = Monday … 7 = Sunday).
+  daysOfWeek           Int[]
+  // Local wall-clock times, "HH:mm".
+  startTime            String
+  endTime              String
+  maxDurationMinutes   Int?
+  // MVP localization: the user asserts the vehicle is usually parked here.
+  vehiclePresentByDefault Boolean         @default(true)
+  dailyCapCents        Int?
+  monthlyCapCents      Int?
+  lastRunAt            DateTime?
+  nextRunAt            DateTime?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  sessions ParkingSession[]
+
+  @@index([userId])
+  @@index([status])
+  @@map("automation_rules")
+}
+
+// ── Sessions, payments ───────────────────────────────────────────────────────
+
+model ParkingSession {
+  id                   String             @id @default(cuid())
+  userId               String
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  vehicleId            String
+  vehicle              Vehicle            @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  cityId               String
+  city                 City               @relation(fields: [cityId], references: [id])
+  zoneId               String
+  zone                 ParkingZone        @relation(fields: [zoneId], references: [id])
+  providerId           String?
+  provider             ParkingProvider?   @relation(fields: [providerId], references: [id])
+  providerConnectionId String?
+  providerConnection   ProviderConnection? @relation(fields: [providerConnectionId], references: [id])
+  automationRuleId     String?
+  automationRule       AutomationRule?    @relation(fields: [automationRuleId], references: [id], onDelete: SetNull)
+  origin               SessionOrigin
+  status               SessionStatus
+  simulated            Boolean            @default(false)
+  decisionType         DecisionType
+  // Human-readable, explainable reasons behind the decision.
+  decisionReasons      Json
+  tariffCode           String?
+  amountCents          Int                @default(0)
+  currency             String             @default("EUR")
+  startedAt            DateTime           @default(now())
+  expiresAt            DateTime?
+  endedAt              DateTime?
+  externalSessionId    String?
+  // Guarantees a single session per (rule, day, window). Prevents double buys.
+  idempotencyKey       String             @unique
+  errorCode            String?
+  errorMessage         String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  payment       Payment?
+  notifications Notification[]
+
+  @@index([userId, startedAt])
+  @@index([automationRuleId])
+  @@index([status])
+  @@map("parking_sessions")
+}
+
+model Payment {
+  id                String          @id @default(cuid())
+  userId            String
+  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId         String          @unique
+  session           ParkingSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  providerId        String?
+  provider          ParkingProvider? @relation(fields: [providerId], references: [id])
+  status            PaymentStatus
+  amountCents       Int
+  currency          String          @default("EUR")
+  simulated         Boolean         @default(false)
+  externalPaymentRef String?
+  failureReason     String?
+  idempotencyKey    String          @unique
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([userId])
+  @@map("payments")
+}
+
+// ── Notifications & audit ────────────────────────────────────────────────────
+
+model Notification {
+  id        String              @id @default(cuid())
+  userId    String
+  user      User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      NotificationType
+  channel   NotificationChannel @default(WEB)
+  title     String
+  body      String
+  sessionId String?
+  session   ParkingSession?     @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  readAt    DateTime?
+  sentAt    DateTime?
+  meta      Json?
+  createdAt DateTime            @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id           String        @id @default(cuid())
+  // Subject of the log (the affected user), nullable for system-level events.
+  userId       String?
+  user         User?         @relation("AuditSubject", fields: [userId], references: [id], onDelete: SetNull)
+  // Who caused the event (user id, "system", or "admin:<id>").
+  actor        String?
+  category     AuditCategory
+  action       String
+  summary      String
+  decisionType DecisionType?
+  entityType   String?
+  entityId     String?
+  data         Json?
+  ip           String?
+  userAgent    String?
+  createdAt    DateTime      @default(now())
+
+  @@index([userId, createdAt])
+  @@index([category, createdAt])
+  @@map("audit_logs")
+}
+
+// ── Runtime system settings (admin-controllable) ─────────────────────────────
+
+model SystemSetting {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String
+  description String?
+  updatedBy   String?
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+
+  @@map("system_settings")
+}
