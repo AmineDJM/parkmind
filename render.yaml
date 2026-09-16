@@ -7,7 +7,7 @@ databases:
   - name: parkmind-db
     databaseName: parkmind
     user: parkmind
-    plan: free # bump to basic-256mb (or higher) for production durability
+    plan: basic-256mb # dedicated paid Postgres (Render allows only one free DB/account)
 
 # Shared secret so the cron and the web service agree on CRON_SECRET.
 envVarGroups:
