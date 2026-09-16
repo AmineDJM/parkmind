@@ -459,4 +459,17 @@ export async function runDueAutomations(
   return counts;
 }
 
+/** Decide what Parkmind WOULD do right now, without persisting anything. */
+export async function previewRule(
+  ruleId: string,
+  now: Date = new Date(),
+): Promise<{ decision: ParkingDecision; simulation: boolean } | null> {
+  const built = await buildContextForRule(ruleId, now);
+  if (!built) return null;
+  return {
+    decision: decide(built.context),
+    simulation: built.context.flags.simulationMode,
+  };
+}
+
 export { buildContextFromRule };
