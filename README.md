@@ -263,14 +263,19 @@ d'achat, dépassement de plafond → confirmation, automatisation désactivée �
 
 Le dépôt cible une base **PostgreSQL managée** (ex. Render) via `DATABASE_URL`.
 
-### Render (blueprint fourni : `render.yaml`)
+### Render (blueprint fourni : `render.yaml`) — zéro configuration
 
-- Service **web** : build `npm ci && npx prisma migrate deploy && npm run build`,
-  start `npm run start`, healthcheck `/api/health`.
-- Service **cron** `parkmind-automation` : appelle l'endpoint toutes les 15 min.
-- Renseignez `DATABASE_URL`, `NEXT_PUBLIC_APP_URL`, `ADMIN_EMAILS`, et le **même**
-  `CRON_SECRET` sur les deux services. `AUTH_SECRET` est généré automatiquement.
-- Lancez le seed une fois (shell Render) : `npm run db:seed` (optionnel).
+Le blueprint est **autonome** : rien à saisir au déploiement.
+- Provisionne une **base PostgreSQL dédiée** (`parkmind-db`) et branche `DATABASE_URL`.
+- Génère `AUTH_SECRET` et `CRON_SECRET` (ce dernier **partagé** entre le web et le
+  cron via un env group).
+- Détecte l'URL publique automatiquement (`RENDER_EXTERNAL_URL`) ; le cron résout
+  l'hôte du service web via `fromService`.
+- Applique les migrations au build (`prisma migrate deploy`) ; healthcheck `/api/health`.
+- Service **cron** `parkmind-automation` : déclenche le moteur toutes les 15 min.
+- `ADMIN_EMAILS` est pré-réglé ; ajustez-le dans `render.yaml` si besoin.
+- Données de démo (optionnel), une fois, via **Render → Shell** : `npm run db:seed`.
+- La base est en plan `free` : passez à `basic-256mb`+ pour la production.
 
 ### Vercel (`vercel.json` fourni)
 

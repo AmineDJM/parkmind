@@ -23,7 +23,12 @@ function int(key: string, fallback: number): number {
 
 export const env = {
   databaseUrl: str('DATABASE_URL'),
-  appUrl: str('NEXT_PUBLIC_APP_URL', 'http://localhost:3000'),
+  // Falls back to Render's auto-injected RENDER_EXTERNAL_URL so no manual URL is
+  // needed on Render; then to localhost for local dev.
+  appUrl:
+    str('NEXT_PUBLIC_APP_URL') ||
+    str('RENDER_EXTERNAL_URL') ||
+    'http://localhost:3000',
   nodeEnv: str('NODE_ENV', 'development'),
   isProduction: str('NODE_ENV') === 'production',
 
