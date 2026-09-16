@@ -40,3 +40,6 @@ yarn-error.log*
 # vercel / turbo
 .vercel
 .turbo
+
+# typescript incremental build info
+*.tsbuildinfo

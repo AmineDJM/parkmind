@@ -26,7 +26,12 @@ async function handle(req: NextRequest) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   }
   const started = Date.now();
-  const counts = await runDueAutomations(new Date());
+  // Optional `at` (ISO datetime) lets an authorized caller run the engine as of a
+  // specific moment — useful for backfills, replays and testing. Secret-gated.
+  const atParam = req.nextUrl.searchParams.get('at');
+  const now = atParam ? new Date(atParam) : new Date();
+  const runAt = Number.isNaN(now.getTime()) ? new Date() : now;
+  const counts = await runDueAutomations(runAt);
   await logAudit({
     actor: 'cron',
     category: 'SYSTEM',

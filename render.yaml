@@ -1,0 +1,45 @@
+# Render blueprint for Parkmind.
+# Uses your existing managed PostgreSQL via DATABASE_URL (set it in the dashboard).
+# Set the SAME CRON_SECRET on both the web and cron services.
+services:
+  - type: web
+    name: parkmind
+    runtime: node
+    plan: starter
+    autoDeploy: true
+    buildCommand: npm ci && npx prisma migrate deploy && npm run build
+    startCommand: npm run start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_APP_URL
+        sync: false
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: CRON_SECRET
+        sync: false
+      - key: DEFAULT_SIMULATION_MODE
+        value: "true"
+      - key: PARKMIND_KILL_SWITCH
+        value: "false"
+      - key: MAIL_DRIVER
+        value: console
+      - key: ADMIN_EMAILS
+        sync: false
+
+  # Triggers the automation engine on a schedule.
+  - type: cron
+    name: parkmind-automation
+    runtime: node
+    plan: starter
+    schedule: "*/15 * * * *"
+    buildCommand: npm ci
+    startCommand: 'curl -fsS -H "Authorization: Bearer $CRON_SECRET" "$NEXT_PUBLIC_APP_URL/api/cron/automation"'
+    envVars:
+      - key: CRON_SECRET
+        sync: false
+      - key: NEXT_PUBLIC_APP_URL
+        sync: false

@@ -14,14 +14,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-
-export interface NavItem {
-  href: string;
-  label: string;
-  icon: keyof typeof ICONS;
-  badge?: number;
-  admin?: boolean;
-}
+import type { NavItem, NavIconKey } from './nav-items';
 
 const ICONS = {
   dashboard: LayoutDashboard,
@@ -32,17 +25,7 @@ const ICONS = {
   bell: Bell,
   settings: Settings,
   admin: ShieldCheck,
-} satisfies Record<string, LucideIcon>;
-
-export const NAV_ITEMS: NavItem[] = [
-  { href: '/dashboard', label: 'Tableau de bord', icon: 'dashboard' },
-  { href: '/vehicles', label: 'Véhicules', icon: 'car' },
-  { href: '/rights', label: 'Droits', icon: 'rights' },
-  { href: '/automations', label: 'Automatisations', icon: 'automations' },
-  { href: '/history', label: 'Historique', icon: 'history' },
-  { href: '/notifications', label: 'Notifications', icon: 'bell' },
-  { href: '/settings', label: 'Réglages', icon: 'settings' },
-];
+} satisfies Record<NavIconKey, LucideIcon>;
 
 function isActive(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);

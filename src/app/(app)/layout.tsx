@@ -7,7 +7,8 @@ import { logoutAction } from '@/server/actions/auth';
 import { LogoMark } from '@/components/ui/logo';
 import { StatusDot, Badge } from '@/components/ui';
 import { initials } from '@/lib/utils';
-import { SidebarNav, BottomNav, NAV_ITEMS, type NavItem } from '@/components/app/app-nav';
+import { SidebarNav, BottomNav } from '@/components/app/app-nav';
+import { NAV_ITEMS, type NavItem } from '@/components/app/nav-items';
 
 export default async function AppLayout({
   children,

@@ -45,8 +45,7 @@ export const Select = React.forwardRef<
   <select
     ref={ref}
     className={cn(
-      'flex h-11 w-full appearance-none rounded-lg border border-input bg-card px-3.5 text-sm text-foreground shadow-soft transition-colors',
-      'bg-[url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' fill=\'none\' viewBox=\'0 0 24 24\' stroke=\'%2394a3b8\' stroke-width=\'2\'%3E%3Cpath d=\'M6 9l6 6 6-6\'/%3E%3C/svg%3E")] bg-[length:1.1rem] bg-[right_0.75rem_center] bg-no-repeat pr-9',
+      'flex h-11 w-full rounded-lg border border-input bg-card px-3.5 text-sm text-foreground shadow-soft transition-colors',
       'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:border-ring',
       'disabled:cursor-not-allowed disabled:opacity-50',
       className,
